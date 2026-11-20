@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Drift Sydney</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&display=swap">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#0c1622;font-family:"Chakra Petch",system-ui,sans-serif;touch-action:none;-webkit-user-select:none;user-select:none}
+canvas{position:fixed;top:0;left:0;display:block}
+#hud{position:fixed;inset:0;pointer-events:none;color:#f4efe6;z-index:2;text-shadow:0 1px 4px rgba(0,0,0,.6)}
+.panel{position:absolute;background:rgba(12,22,34,.74);clip-path:polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px)}
+#spd{left:12px;top:calc(12px + env(safe-area-inset-top,0px));padding:8px 16px 10px;min-width:170px}
+#row{display:flex;align-items:baseline;gap:8px}
+#gr{width:16px;font-size:22px;font-weight:700;color:#4fd1c5}
+#kmh{font-size:50px;font-weight:700;line-height:1}
+#row small{font-size:14px;opacity:.7}
+#bar{height:4px;margin-top:6px;background:rgba(244,239,230,.16)}
+#bar i{display:block;height:100%;width:0;background:#4fd1c5}
+#tot{position:absolute;left:14px;top:calc(128px + env(safe-area-inset-top,0px));font-size:14px;font-weight:500;line-height:1.5}
+#dr{position:absolute;left:0;right:0;top:31%;text-align:center;font-size:34px;font-weight:700;color:#ff6a3d;opacity:0;transition:opacity .2s}
+#msg{position:absolute;left:50%;top:42%;transform:translateX(-50%);padding:8px 16px;font-size:17px;font-weight:500;white-space:nowrap;background:rgba(12,22,34,.8);opacity:0;transition:opacity .35s}
+.b{pointer-events:auto;position:absolute;display:flex;align-items:center;justify-content:center;background:rgba(12,22,34,.62);border:0;color:#f4efe6;font:500 13px "Chakra Petch",system-ui,sans-serif;clip-path:polygon(12px 0,100% 0,100% calc(100% - 12px),calc(100% - 12px) 100%,0 100%,0 12px);touch-action:none;-webkit-tap-highlight-color:transparent}
+.b.on{background:rgba(255,106,61,.85)}
+[data-k=L],[data-k=R]{bottom:calc(14px + env(safe-area-inset-bottom,0px));width:78px;height:78px;font-size:30px}
+[data-k=L]{left:10px}
+[data-k=R]{left:96px}
+[data-k=B]{right:108px;bottom:calc(14px + env(safe-area-inset-bottom,0px));width:72px;height:72px}
+[data-k=G]{right:10px;bottom:calc(14px + env(safe-area-inset-bottom,0px));width:92px;height:92px;background:rgba(79,209,197,.4)}
+[data-k=H]{right:10px;bottom:calc(120px + env(safe-area-inset-bottom,0px));width:72px;height:72px}
+[data-a]{top:calc(12px + env(safe-area-inset-top,0px));width:76px;height:40px}
+[data-a=cam]{right:12px}
+[data-a=door]{right:96px}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div class="panel" id="spd"><div id="row"><span id="gr">D</span><span id="kmh">0</span><small>km/h</small></div><div id="bar"><i></i></div></div>
+  <div id="tot"></div>
+  <div id="dr"></div>
+  <div id="msg"></div>
+  <button class="b" data-a="cam">Câmera</button>
+  <button class="b" data-a="door">Porta</button>
+  <button class="b" data-k="L">◀</button>
+  <button class="b" data-k="R">▶</button>
+  <button class="b" data-k="B">Freio</button>
+  <button class="b" data-k="H">Mão</button>
+  <button class="b" data-k="G">Gás</button>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const pc=matchMedia('(pointer:fine)').matches;
+const R=new THREE.WebGLRenderer({antialias:true});
+R.setPixelRatio(Math.min(devicePixelRatio,2));
+R.setSize(innerWidth,innerHeight);
+R.shadowMap.enabled=true;
+R.shadowMap.type=THREE.PCFSoftShadowMap;
+R.outputEncoding=THREE.sRGBEncoding;
+document.body.appendChild(R.domElement);
+
+const S=new THREE.Scene();
+S.background=new THREE.Color(0xbfe0f0);
+S.fog=new THREE.Fog(0xbfe0f0,180,720);
+const cam=new THREE.PerspectiveCamera(72,innerWidth/innerHeight,.1,1500);
+
+// luz e sombra
+S.add(new THREE.HemisphereLight(0xeaf6ff,0x5a5148,.85));
+const sun=new THREE.DirectionalLight(0xfff0d4,1.8);
+sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-60,right:60,top:60,bottom:-60,far:400});
+sun.shadow.camera.updateProjectionMatrix();
+sun.shadow.bias=-.0005;
+S.add(sun);S.add(sun.target);
+
+// reflexo: mapa de ambiente tirado do centro do carro
+const env=new THREE.WebGLCubeRenderTarget(128,{generateMipmaps:true,minFilter:THREE.LinearMipmapLinearFilter});
+const cubeCam=new THREE.CubeCamera(.5,900,env);
+S.add(cubeCam);
+
+const M=(c,r=.8,m=0,e=null)=>new THREE.MeshStandardMaterial({color:c,roughness:r,metalness:m,envMap:e});
+const MT={
+  water:M(0x0f5b78,.12,.5,env.texture),land:M(0x3d434b,.95),plaza:M(0x4b525b,.9),
+  paint:M(0x6f757d,.22,.85,env.texture),tire:M(0x161616,.9),rim:M(0xc7ccd3,.22,.9,env.texture),
+  dash:M(0x15171b,.6),
+  bld:[M(0xd8c3a5,.6),M(0xe9e4da,.55),M(0xa9b5c0,.5),M(0xb9866a,.7)],
+  tower:[M(0x3c5a73,.15,.6,env.texture),M(0x2c4a60,.2,.6,env.texture)]
+};
+
+// chão, baía e praça
+const plane=(w,m,y)=>{const p=new THREE.Mesh(new THREE.PlaneGeometry(w,w),m);p.rotation.x=-Math.PI/2;p.position.y=y;p.receiveShadow=true;S.add(p)};
+plane(4000,MT.water,-.3);
+plane(350,MT.land,0);
+plane(224,MT.plaza,.02);
+
+// cidade: quarteirões de prédios, com torres no centro
+const BG=new THREE.BoxGeometry(1,1,1),AB=[];
+for(let i=-6;i<=6;i++)for(let j=-6;j<=6;j++){
+  const cx=i*26+(Math.random()-.5)*6,cz=j*26+(Math.random()-.5)*6;
+  if(Math.abs(cx)<112&&Math.abs(cz)<112)continue;
+  const w=13+Math.random()*9,d=13+Math.random()*9;
+  const h=18+Math.random()*12+Math.random()**2*130*(1-Math.min(1,Math.hypot(cx,cz)/190));
+  const m=new THREE.Mesh(BG,h>95?MT.tower[Math.random()<.5?0:1]:MT.bld[(Math.random()*4)|0]);
+  m.scale.set(w,h,d);m.position.set(cx,h/2,cz);m.castShadow=true;m.receiveShadow=true;S.add(m);
+  AB.push({x0:cx-w/2,x1:cx+w/2,z0:cz-d/2,z1:cz+d/2});
+}
+AB.push({x0:-999,x1:-176,z0:-999,z1:999},{x0:176,x1:999,z0:-999,z1:999},{x0:-999,x1:999,z0:-999,z1:-176},{x0:-999,x1:999,z0:176,z1:999});
+
+// carro (forma simples de cupê, no lugar do Audi)
+const car=new THREE.Group();S.add(car);
+const sh=new THREE.Shape();
+sh.moveTo(-2.3,.36);sh.lineTo(2.3,.36);sh.lineTo(2.3,.72);sh.lineTo(1.5,.8);sh.lineTo(.45,1.27);sh.lineTo(-.85,1.29);sh.lineTo(-1.75,.92);sh.lineTo(-2.3,.85);sh.closePath();
+const bg=new THREE.ExtrudeGeometry(sh,{depth:1.7,bevelEnabled:true,bevelThickness:.13,bevelSize:.13,bevelSegments:3,curveSegments:4});
+bg.rotateY(Math.PI/2);bg.computeBoundingBox();
+{const b=bg.boundingBox;bg.translate(-(b.min.x+b.max.x)/2,0,0)}
+const body=new THREE.Mesh(bg,MT.paint);body.castShadow=true;car.add(body);
+// painéis internos: sem eles, a lateral aparece transparente de dentro
+[-.8,.8].forEach(px=>{const p=new THREE.Mesh(new THREE.BoxGeometry(.08,.75,2.4),MT.dash);p.position.set(px,.8,0);car.add(p)});
+const dash=new THREE.Mesh(new THREE.BoxGeometry(1.5,.2,.45),MT.dash);dash.position.set(0,.98,-.5);car.add(dash);
+const sw=new THREE.Mesh(new THREE.TorusGeometry(.17,.022,8,28),MT.dash);sw.position.set(-.36,.92,-.28);sw.rotation.x=-.5;car.add(sw);
+const WG=new THREE.CylinderGeometry(.34,.34,.28,20).rotateZ(Math.PI/2);
+const RG=new THREE.CylinderGeometry(.2,.2,.3,12).rotateZ(Math.PI/2);
+const wheel=(px,pz)=>{const g=new THREE.Group();g.position.set(px,.34,pz);const t=new THREE.Mesh(WG,MT.tire);t.castShadow=true;g.add(t);g.add(new THREE.Mesh(RG,MT.rim));car.add(g);return g};
+const fl=wheel(-.8,-1.42),fr=wheel(.8,-1.42);wheel(-.8,1.42);wheel(.8,1.42);
+
+// entrada
+const KB={},TC={},KM={KeyW:'G',ArrowUp:'G',KeyS:'B',ArrowDown:'B',KeyA:'L',ArrowLeft:'L',KeyD:'R',ArrowRight:'R',Space:'H'};
+const on=k=>KB[k]||TC[k];
+addEventListener('keydown',e=>{const k=KM[e.code];if(k){KB[k]=1;e.preventDefault()}if(!e.repeat){if(e.code==='KeyC')toggleCam();if(e.code==='KeyE')door()}});
+addEventListener('keyup',e=>{const k=KM[e.code];if(k)KB[k]=0});
+document.querySelectorAll('[data-k]').forEach(b=>{const k=b.dataset.k;b.addEventListener('pointerdown',e=>{e.preventDefault();TC[k]=1;b.classList.add('on')});['pointerup','pointerleave','pointercancel'].forEach(t=>b.addEventListener(t,()=>{TC[k]=0;b.classList.remove('on')}))});
+document.querySelectorAll('[data-a]').forEach(b=>b.addEventListener('click',()=>b.dataset.a==='cam'?toggleCam():door()));
+
+// estado e física (arcade, com perda de aderência lateral para o drift)
+let x=0,z=60,yaw=0,vx=0,vz=0,vf=0,steer=0,drift=0,dT=0,total=0,best=0,camMode=0,tmr;
+const MAXV=64,R0=1.05,camPos=new THREE.Vector3(),cv=new THREE.Vector3();
+
+function say(t,ms=2200){const m=$('msg');m.textContent=t;m.style.opacity=1;clearTimeout(tmr);tmr=setTimeout(()=>m.style.opacity=0,ms)}
+function door(){say('Porta trancada. Você dirige até o fim.')}
+function toggleCam(){camMode^=1;camPos.copy(cam.position);say(camMode?'Câmera externa':'Câmera do motorista',1200)}
+
+function step(h){
+  const fx=-Math.sin(yaw),fz=-Math.cos(yaw),rx=Math.cos(yaw),rz=-Math.sin(yaw);
+  let f=vx*fx+vz*fz,s=vx*rx+vz*rz;
+  const g=on('G'),b=on('B'),hb=on('H');
+  steer+=((on('L')?1:0)-(on('R')?1:0)-steer)*Math.min(1,h*7);
+  if(g)f+=14*h*Math.max(0,1-f/MAXV);
+  if(b)f=Math.max(-18,f-(f>1?26:7)*h);
+  f*=Math.exp(-(g?.02:.25)*h);
+  s*=Math.exp(-(hb?1.8:(g&&f>22?6:12))*h);
+  const slip=Math.atan2(Math.abs(s),Math.max(Math.abs(f),.01));
+  if(Math.abs(f)>8&&slip>.28){dT+=h;drift+=h*Math.abs(f)*slip*10*(1+Math.min(4,dT/3))}
+  else if(drift>0||dT>0){if(drift>50)say('Drift +'+Math.round(drift));total+=drift;best=Math.max(best,total);drift=0;dT=0}
+  const yr=steer*2.1*Math.min(1,Math.abs(f)/12)*(f<0?-1:1);
+  vx=fx*f+rx*s;vz=fz*f+rz*s;vf=f;
+  yaw+=yr*h;x+=vx*h;z+=vz*h;
+  walls();
+}
+
+function walls(){
+  for(const o of[1.4,-1.4])for(const b of AB){
+    const px=x-Math.sin(yaw)*o,pz=z-Math.cos(yaw)*o;
+    const nx=px-Math.min(Math.max(px,b.x0),b.x1),nz=pz-Math.min(Math.max(pz,b.z0),b.z1);
+    const d=Math.hypot(nx,nz);
+    if(d<R0&&d>1e-4){
+      const ux=nx/d,uz=nz/d,p=R0-d;
+      x+=ux*p;z+=uz*p;
+      const vn=vx*ux+vz*uz;
+      if(vn<0){vx=(vx-1.35*vn*ux)*.8;vz=(vz-1.35*vn*uz)*.8;if(-vn>8){say('Batida!',1000);drift=0;dT=0}}
+    }
+  }
+}
+
+function view(dt){
+  car.position.set(x,0,z);car.rotation.y=yaw;car.updateMatrixWorld(true);
+  fl.rotation.y=fr.rotation.y=steer*.45;
+  sw.rotation.z=-steer*2.5;
+  sun.position.set(x+60,130,z+80);sun.target.position.set(x,0,z);
+  if(camMode===0){
+    cam.position.copy(car.localToWorld(cv.set(-.36,1.05,.25)));
+    cam.quaternion.copy(car.quaternion);
+    cam.rotateZ(-steer*.03*Math.min(1,Math.abs(vf)/30));
+  }else{
+    camPos.lerp(car.localToWorld(cv.set(0,2.8,7)),1-Math.pow(.02,dt));
+    cam.position.copy(camPos);
+    cam.lookAt(car.localToWorld(cv.set(0,1,-2)));
+  }
+  const sp=Math.hypot(vx,vz);
+  $('kmh').textContent=Math.round(sp*3.6);
+  $('gr').textContent=vf<-.5?'R':'D';
+  $('bar').firstElementChild.style.width=Math.min(100,sp/MAXV*100)+'%';
+  $('dr').textContent='Drift +'+Math.round(drift)+'  ×'+Math.floor(1+Math.min(4,dT/3));
+  $('dr').style.opacity=drift>0?1:0;
+  $('tot').innerHTML='Total '+Math.round(total)+'<br>Recorde '+Math.round(best);
+}
+
+let last=performance.now(),fc=0;
+function loop(now){
+  const dt=Math.min(.05,(now-last)/1000);last=now;
+  const n=Math.max(1,Math.ceil(dt*120));
+  for(let i=0;i<n;i++)step(dt/n);
+  view(dt);
+  if(fc++%6===0){car.visible=false;cubeCam.position.set(x,1.4,z);cubeCam.updateMatrixWorld();cubeCam.update(R,S);car.visible=true}
+  R.render(S,cam);
+  requestAnimationFrame(loop);
+}
+
+say(pc?'Você já está no carro. WASD ou setas, Espaço = freio de mão, C = câmera':'Você já está no carro. Use os botões. Mão = freio de mão',4500);
+addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();R.setSize(innerWidth,innerHeight)});
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
